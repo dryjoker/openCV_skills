@@ -1,0 +1,33 @@
+//Standard Library
+#include <iostream>
+#include <stdio.h>
+//OpenCV Header
+#include <opencv2\opencv.hpp>
+#include<opencv2\highgui\highgui.hpp>
+#include<opencv2\imgproc\imgproc.hpp>
+#include<opencv2\video\background_segm.hpp>
+using namespace cv;
+using namespace std;
+// Kinect for Windows SDK Header
+#include <Kinect.h>
+//for  clock() 、 CLOCKS_PER_SEC
+
+int main(int argc, char *argv[])
+{
+	// pics are a sequence of Pictures001.jpg, PicturesS002.jpg, etc
+	VideoCapture cap("C:/Users/Mcu/Desktop/wake_up_detect_project/opencv_test/opencv_test/depth_%04d.jpg");
+
+	Mat frame;
+	VideoWriter out_capture("C:/Users/Mcu/Desktop/wake_up_detect_project/opencv_test/opencv_test/video.avi",
+								CV_FOURCC('P', 'I', 'M', '1'), 30, Size(512,424));
+	for (;;)
+	{
+		cap >> frame;
+		if (frame.empty())
+			break;
+
+		out_capture.write(frame);
+	}
+	system("PAUSE");
+	return 0;
+}
