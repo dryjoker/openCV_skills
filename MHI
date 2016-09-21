@@ -1,0 +1,192 @@
+#include "opencv2/video/tracking.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc/imgproc_c.h"
+#include <time.h> // for CLOCKS_PER_SEC 及 clock()
+#include <stdio.h>
+#include <ctype.h>
+
+// various tracking parameters (in seconds)
+const double MHI_DURATION = 1;//1s 為運動跟踪的最大持續時間
+const double MAX_TIME_DELTA = 0.5;//最大時間增量為0.5s 
+const double MIN_TIME_DELTA = 0.05;//最小時間增量0.05s 
+
+// number of cyclic frame buffer used for motion detection
+// (should, probably, depend on FPS)
+const int N = 5;//frame buffer當中你要存取的frame數
+
+// ring image buffer
+IplImage **buf = 0; // 創建 frame buffer , 型態為IplImage * buf 的 Array
+int last = 0;
+
+// temporary images
+IplImage *mhi = 0; // MHI
+IplImage *orient = 0; // orientation
+IplImage *mask = 0; // valid orientation mask
+IplImage *segmask = NULL; // motion segmentation map
+CvMemStorage* storage = NULL; // temporary storage
+//用來建立一個指定大小的記憶體區塊，若為0，
+//則建立的記憶體區塊大小依照預設值為64k
+
+// parameters:
+//  img - input video frame
+//  dst - resultant motion picture
+//  args - optional parameters
+static void  update_mhi(IplImage* img, IplImage* dst, int diff_threshold)
+{
+	double timestamp = (double)clock() / CLOCKS_PER_SEC; // 得到當前時間(以毫秒為單位)
+	//
+	CvSize size = cvSize(img->width, img->height); // //獲取目前攝像頭捕捉到的frame size
+	int i, idx1 , idx2;
+	IplImage* silh; //創建一個用來存輪廓(剪影)的圖像空間
+	CvSeq* seq; // 創建一序列				
+		
+	
+	
+	if (!mhi || mhi->width != size.width || mhi->height != size.height) 
+	{
+		//如果frame的大小有所改變,就重新分配他們到緩衝區中	
+
+		if (buf == 0) //如果IplImage *的陣列 
+		{
+			buf = (IplImage**)malloc(N*sizeof(buf[0]));
+			memset(buf, 0, N*sizeof(buf[0]));
+		}
+
+		for (i = 0; i < N; i++) {
+			cvReleaseImage(&buf[i]);
+			buf[i] = cvCreateImage(size, IPL_DEPTH_8U, 1);
+			cvZero(buf[i]);
+		}
+		cvReleaseImage(&mhi);
+		cvReleaseImage(&orient);
+		cvReleaseImage(&segmask);
+		cvReleaseImage(&mask);
+
+		mhi = cvCreateImage(size, IPL_DEPTH_32F, 1);
+		cvZero(mhi); // clear MHI at the beginning
+		orient = cvCreateImage(size, IPL_DEPTH_32F, 1);
+		segmask = cvCreateImage(size, IPL_DEPTH_32F, 1);
+		mask = cvCreateImage(size, IPL_DEPTH_8U, 1);
+	}
+
+	cvCvtColor(img, buf[last], CV_BGR2GRAY); // convert frame to grayscale
+	//第一張 視訊影像在剛載入時先做了彩色轉灰階的功能
+	//並存放在frame buffer的IplImage *的指針(陣列中)
+	//buf[last] 即 buf[0] 第一個位置
+
+	//設定frame的索引編號
+	idx1 = last;
+	//將idx1設為編號0 (最近進來的視訊frame索引編號)
+	//執行第一輪 更新index到 0
+	//執行第二輪 更新index到 1
+
+	idx2 = (last + 1) % N; 
+	// index of (last - (N-1))th frame 
+	//idx2 代表 第 最新進來的視訊frame編號
+	//執行第一輪 更新index到 1
+	//執行第二輪 更新index到 2
+
+	last = idx2;//last以更新到index 1 之後
+	//執行第一輪 更新index到 1
+	//執行第二輪 更新index到 2
+
+	//做幀差(Frame Difference)連續影像相減法
+	silh = buf[idx2];//silh首先會在此接收到來自緩衝區buf[1]的一張單通灰階影像
+	cvAbsDiff(buf[idx1], buf[idx2], silh);// get difference between frames 
+	//執行第一輪 buffer 當中 index 0 - index 1 存給silh
+	//執行第二輪 buffer 當中 index 1 - index 2 存給silh
+
+	//對輪廓做二值化
+	cvThreshold(silh, silh, diff_threshold, 1, CV_THRESH_BINARY); // and threshold it
+	//cvThreshold(輸入圖像,輸出圖像,臨界值,)
+
+	cvUpdateMotionHistory(silh, mhi, timestamp, MHI_DURATION); // update MHI
+	//第一個參數 silhouette : 由幀間差分(Frame difference)得到的運動輪廓圖像。
+	//第二個參數 mhi : motion histoty image的縮寫，表示運動歷史圖像。
+	//第三個參數 timestamp : 時間標記。
+	//第四個參數 duration : 發生過運動的像素所能保持的最長時間。
+
+	// convert MHI to  8u image(哪種通道混和效果由自己取決)
+	cvCvtScale(mhi, mask, 255. / MHI_DURATION,
+		(MHI_DURATION - timestamp)*255. / MHI_DURATION);
+
+	cvZero(dst);//若預設通道合併處填為藍色就會在一開始顯示為藍色
+	//若我在此把cvZero(dst);註解掉你就會看到反色
+	//以藍色為例你看到的就會是黃背白前景
+	//這裡主要是設計用來將輪廓(剪影)以藍色通道來做顏色強弱顯示
+
+	cvMerge(mask, mask, mask, 0, dst); //合併單通道矩陣為成為多通道的圖形
+	//cvMerge(B,G,R,A,dst)	
+	//前四個引數為單通道uchar型別的資料結構,
+	//第五個引數為輸出IplImage資料結構或CvMat結構圖形
+
+	// calculate motion gradient orientation and valid orientation mask
+	//計算運動歷史圖像的梯度方向
+	cvCalcMotionGradient(mhi, mask, orient, MAX_TIME_DELTA, MIN_TIME_DELTA, 3);
+	//cvCalcMotionGradient(mhi, mask, orient, MIN_TIME_DELTA, MAX_TIME_DELTA, 3);
+	//第一個參數 : 運動歷史圖像(單通道)
+	//第二個參數 : Mask 圖像；用來標註運動梯度數據正確的點,單通道8bits，為輸出參數
+	//第三個參數 : 運動梯度的方向圖像，包含從0 到360 角度
+	//第四個參數 : 函數在每個像素點(x,y) 鄰域尋找MHI 的最小值(m(x,y)) 
+	//第五個參數 : 函數在每個像素點(x,y) 鄰域尋找MHI 的最大值(m(x,y)) 
+	//min(delta1,delta2) <= M(x,y)-m(x,y) <= max(delta1,delta2)
+	//第六個參數 : Aperture size of sobel operator
+	//索貝爾運算子的光圈大小(函數所用微分算子的開孔尺寸CV_SCHARR, 1, 3, 5 or 7 (見cvSobel))	
+	//Both inDelta1 and inDelta2 must be greater than 0.0 in cvCalcMotionGradient.
+	//History image must be REAL single-channel in cvCalcMotionGradient.
+
+	if (!storage)
+		storage = cvCreateMemStorage(0);//建立的記憶體區塊大小依照預設值為64k
+	else
+		cvClearMemStorage(storage);
+
+	// segment motion: get sequence of motion components
+	// segmask is marked motion components map. It is not used further
+	seq = cvSegmentMotion(mhi, segmask, storage, timestamp, MAX_TIME_DELTA);
+	//將整個運動分割為獨立的運動部分
+	//第一個參數 : 運動歷史圖像(單通道)
+	//第二個參數 : 發現應當存儲的mask圖像, 單通道32bits浮點數,用不同的單獨數字(1,2,...)標識它們
+	//第三個參數 : 包含運動連通域序列的內存存儲倉區塊
+	//第四個參數 :當前時間，以毫秒為單位
+	//第五個參數 : 分割閾值，推薦等於或大於運動歷史"每步"之間的間隔	
+}
+
+
+int main(int argc, char** argv)
+{
+	IplImage* motion = 0;
+	CvCapture* capture = 0;
+	//capture = cvCaptureFromCAM(0);	// 攝影機開啟
+	capture = cvCaptureFromAVI("C:/img_res/record2.avi");
+	if (capture)
+	{
+		cvNamedWindow("Motion", 1);
+		for (;;)
+		{
+			IplImage* image = cvQueryFrame(capture);
+			if (!image)//判斷使否沒取到影格
+				break;
+
+			if (!motion)//如果motion圖像的資料結構為空值
+			{
+				motion = cvCreateImage(cvSize(image->width, image->height), 8, 3);
+				//就先產生3通道,大小跟攝影機捕捉到的影像相同的空間
+				//cvZero(motion);//設值為0---->
+				//若預設通道合併處填為藍色就會在一開始顯示為藍色
+				motion->origin = image->origin;
+			}
+			int key = cvWaitKey(33);
+			update_mhi(image, motion, 30);
+			//自定義的update_mhi函數(攝影機捕獲到的影像 , )
+			cvShowImage("Motion", motion);
+			if (key == 27)break;
+			if (key == ' '){
+				cvSaveImage("photo1.jpg", motion);
+				break;
+			}				
+		}
+		cvReleaseCapture(&capture);		
+		cvDestroyWindow("Motion");
+	}
+	return 0;
+}
