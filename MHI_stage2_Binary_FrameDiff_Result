@@ -1,0 +1,133 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using Emgu.CV;
+using Emgu.CV.Structure;
+using Emgu.Util;
+using Emgu.CV.CvEnum;
+using Emgu.CV.VideoSurveillance;
+
+namespace MotionHistorytest
+{
+    public partial class Form1 : Form
+    {
+        #region Globle Var
+        private Capture capture = new Capture();
+        Image<Bgr, Byte> ImageFrame = new Image<Bgr, Byte>(320, 240);
+        Image<Gray, Byte> difI;
+        private Capture _capture = null;
+        private bool _captureInProgress = false;
+        private bool _newRef = false;
+
+        private Image<Gray, Byte> refI;
+        private Image<Gray, Byte> mhI;
+        private bool cap = false;
+        private bool frameDiff = false;
+        private bool frameBinary = false;
+        private bool frameMHI = false;
+        #endregion
+
+
+
+
+        public Form1()
+        {
+            InitializeComponent();           
+        }
+        private void Form1_Load(object sender, EventArgs e)
+        {
+        }
+
+        private void btnWebcam_Click(object sender, EventArgs e)
+        {
+            if (_capture == null)
+            {
+                try
+                {
+                    _capture = new Capture();
+                }
+                catch (NullReferenceException excpt)
+                {
+                    MessageBox.Show(excpt.Message);
+                }
+            }
+            if (_capture != null)
+            {
+                if (_captureInProgress)
+                {
+                    //stop the capture                    
+                    Application.Idle -= processFrame;
+                }
+                else
+                {
+                    //start the capture
+                    Application.Idle += processFrame;
+                }
+                _captureInProgress = !_captureInProgress;
+                cap = true;
+            }
+        }                        
+
+        private void processFrame(object sender, EventArgs e)
+        {
+            if(cap)
+            {
+                Image<Bgr, Byte> frame = _capture.QueryFrame();//這裡不斷接收新的下一frame
+                pictureBox1.Image = frame.Flip(Emgu.CV.CvEnum.FLIP.HORIZONTAL).ToBitmap();
+
+                if (frameDiff)
+                {
+                    Image<Gray, Byte> grayFrame = frame.Convert<Gray, Byte>();//轉灰階
+                    grayFrame = grayFrame.Flip(Emgu.CV.CvEnum.FLIP.HORIZONTAL);//水平翻轉
+
+                    if (!_newRef)
+                    {
+                        refI = grayFrame;
+                        _newRef = true;
+                        mhI = new Image<Gray, Byte>(refI.Width, refI.Height);
+                    }
+
+                    Image<Gray, Byte> difI = grayFrame.AbsDiff(refI);
+                    pictureBox2.Image = difI.ToBitmap();
+                    // 更新前一張參考影格將矩陣做乘法運算(同乘0.65)再加上下一張影格0.35倍的點乘乘積
+                    refI = refI.Mul(0.65);
+                    refI = refI.Add(grayFrame.Mul(0.35));
+
+                    if (frameBinary)
+                    {
+                        difI = difI.ThresholdBinary(new Gray(60), new Gray(255));
+                        pictureBox3.Image = difI.ToBitmap();
+                    }
+                    /*       
+                        mhI = mhI.Sub(new Gray(25));
+                        mhI = mhI.Max(difI);
+                    */                                       
+                }
+
+            }
+
+            //pictureBox3.Image = mhI.ToBitmap();
+        }
+
+        private void btnFrameDiff_Click(object sender, EventArgs e)
+        {
+            frameDiff = true;            
+        }
+
+        private void btnMHI_Click(object sender, EventArgs e)
+        {            
+            frameMHI = true;
+        }
+
+        private void btnBinary_Click(object sender, EventArgs e)
+        {
+            frameBinary = true;
+        }
+    }
+}
